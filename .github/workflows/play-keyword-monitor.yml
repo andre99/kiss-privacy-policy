@@ -57,6 +57,12 @@ jobs:
         if: always()
         run: python monitor.py --all --render-md --build-pages
 
+      # Keep existing privacy HTML on the same Pages site (gh-pages is orphaned each run).
+      - name: Include privacy policy on Pages
+        if: success()
+        run: |
+          cp ../counter_privacy_policy.html pages/counter_privacy_policy.html
+
       - name: Publish to GitHub Pages
         if: success()
         uses: peaceiris/actions-gh-pages@v4
@@ -65,7 +71,6 @@ jobs:
           publish_dir: aso-monitor/pages
           force_orphan: true
           commit_message: "ASO progress ${{ github.run_id }}"
-
       - name: Publish summary on Actions run
         if: always()
         env:
