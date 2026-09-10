@@ -1,0 +1,13 @@
+# Shared defaults for every app under apps/
+# Each app YAML can override n_hits / markets.
+
+n_hits: 50
+
+markets:
+  - { country: us, lang: en }
+  - { country: gb, lang: en }
+  - { country: pt, lang: pt }
+  - { country: br, lang: pt }
+  - { country: es, lang: es }
+  - { country: de, lang: de }
+  - { country: fr, lang: fr }

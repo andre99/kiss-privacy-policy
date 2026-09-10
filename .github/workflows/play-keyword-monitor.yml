@@ -1,0 +1,166 @@
+name: Play keyword rank monitor
+
+# Daily ASO checks for all apps under aso-monitor/apps/.
+# History: Actions artifact. Charts: GitHub Pages (gh-pages). Digests: GitHub Issue.
+on:
+  schedule:
+    - cron: "15 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+  issues: write
+  pages: write
+
+concurrency:
+  group: play-keyword-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Run keyword monitor
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aso-monitor
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore previous history artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: aso-monitor-history
+          workflow: play-keyword-monitor.yml
+          workflow_conclusion: success
+          path: aso-monitor/data
+          search_artifacts: true
+          if_no_artifact_found: warn
+        continue-on-error: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: aso-monitor/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run monitor (all apps)
+        run: python monitor.py --all --delay 1.5
+
+      - name: Build reports + Pages site
+        if: always()
+        run: python monitor.py --all --render-md --build-pages
+
+      - name: Publish to GitHub Pages
+        if: success()
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: aso-monitor/pages
+          force_orphan: true
+          commit_message: "ASO progress ${{ github.run_id }}"
+
+      - name: Publish summary on Actions run
+        if: always()
+        env:
+          PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: |
+          {
+            echo "## Play keyword ranks"
+            echo
+            echo "**Live charts:** [${PAGES_URL}](${PAGES_URL})"
+            echo
+            for md in data/*/HISTORY.md; do
+              [ -f "$md" ] || continue
+              echo
+              echo "---"
+              echo
+              # Skip H1; keep per-app sections readable in the job summary
+              tail -n +2 "$md"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload history artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aso-monitor-history
+          path: aso-monitor/data
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Update progress issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ISSUE_TITLE: "Play keyword progress (ASO)"
+        working-directory: aso-monitor
+        run: |
+          set -euo pipefail
+          DAY="$(date -u +%Y-%m-%d)"
+
+          ISSUE="$(
+            gh issue list --state open --search "in:title \"${ISSUE_TITLE}\"" --json number,title \
+              --jq ".[] | select(.title == \"${ISSUE_TITLE}\") | .number" \
+              | head -n1
+          )"
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "## Latest: ${DAY}"
+            echo
+            echo "**Live charts (all apps):** ${PAGES_URL}"
+            echo
+            echo "Run: ${RUN_URL}"
+            echo
+            for md in data/*/HISTORY.md; do
+              [ -f "$md" ] || continue
+              echo
+              echo "---"
+              echo
+              cat "$md"
+            done
+            echo
+            echo "---"
+            echo "_Updated by the Play keyword rank monitor. Subscribe for a notification each day._"
+          } > "${BODY_FILE}"
+
+          if [ -z "${ISSUE}" ]; then
+            ISSUE="$(
+              gh issue create \
+                --title "${ISSUE_TITLE}" \
+                --body-file "${BODY_FILE}" \
+                | sed -n 's#.*/issues/\([0-9][0-9]*\).*#\1#p'
+            )"
+            echo "Created issue #${ISSUE}"
+          else
+            gh issue edit "${ISSUE}" --body-file "${BODY_FILE}"
+            COMMENT_FILE="$(mktemp)"
+            {
+              echo "### ${DAY}"
+              echo
+              echo "Charts: ${PAGES_URL}"
+              echo
+              echo "Run: ${RUN_URL}"
+              for md in data/*/HISTORY.md; do
+                [ -f "$md" ] || continue
+                slug="$(basename "$(dirname "$md")")"
+                echo
+                echo "<details><summary>${slug}</summary>"
+                echo
+                cat "$md"
+                echo
+                echo "</details>"
+              done
+            } > "${COMMENT_FILE}"
+            gh issue comment "${ISSUE}" --body-file "${COMMENT_FILE}"
+            echo "Updated issue #${ISSUE}"
+          fi
